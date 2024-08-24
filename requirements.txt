@@ -1,0 +1,11 @@
+numpy
+torch
+wandb
+sentence-transformers
+fasttext
+tenacity
+pandas
+fastapi
+openai
+pydantic
+groq
