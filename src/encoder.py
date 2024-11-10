@@ -1,79 +1,132 @@
-from sentence_transformers import SentenceTransformer
 import json
 import os
 import numpy as np
 import fasttext
 import fasttext.util
 import shutil
+from sentence_transformers import SentenceTransformer
 
-class Encoder():
-    def __init__(self, encoder_type="fasttext", emb_dim=300, memory_size=1000, save_memory=0.1, memory_path='../encoder_memory/memory.json'):
+
+class Encoder:
+    """
+    Encoder class for handling text embeddings with support for FastText and BERT-based models.
+
+    Parameters:
+    - encoder_type (str): The type of encoder to use ("fasttext", "bert", or "medbert").
+    - emb_dim (int): Desired embedding dimension.
+    - memory_size (int): Maximum number of encodings to store in memory.
+    - save_memory (float): Percentage of memory to save incrementally.
+    - memory_path (str): Path to JSON file for saving memory cache.
+    """
+
+    def __init__(self, encoder_type="fasttext", emb_dim=300, memory_size=1000, save_memory=0.1,
+                 memory_path='../encoder_memory/memory.json'):
         self.memory_path = memory_path
-        self.encoder_type = encoder_type
-        if encoder_type == "fasttext":
-            if not os.path.exists("./lms/cc.en.300.bin"):
-                fasttext.util.download_model('en')
-                shutil.move("./cc.en.300.bin", "./lms/cc.en.300.bin")
-            self.model = fasttext.load_model(
-                "./lms/cc.en.300.bin"
-            )
-            if emb_dim < 300:
-                print("reducing fasttext model...")
-                fasttext.util.reduce_model(self.model, emb_dim)
-
-        elif encoder_type == "bert" or encoder_type == "medbert":
-            self.model = SentenceTransformer(model_name_or_path='all-MiniLM-L6-v2' if encoder_type == "bert" else 'pritamdeka/S-PubMedBert-MS-MARCO')
-        else:
-            raise NotImplementedError
-
-        self.memory = {}
-        if os.path.exists(memory_path):
-            self.memory = json.load(open(memory_path, 'r'))
         self.memory_size = memory_size
         self.save_memory = save_memory
+        self.encoder_type = encoder_type
+        self.memory = {}
+
+        # Ensure memory path directory exists
+        os.makedirs(os.path.dirname(memory_path), exist_ok=True)
+
+        # Initialize encoder model based on encoder_type
+        if encoder_type == "fasttext":
+            self._initialize_fasttext(emb_dim)
+        elif encoder_type in ["bert", "medbert"]:
+            self._initialize_bert(encoder_type)
+        else:
+            raise NotImplementedError(f"Encoder type '{encoder_type}' is not supported.")
+
+        # Load memory from file if it exists
+        if os.path.exists(memory_path):
+            with open(memory_path, 'r') as f:
+                self.memory = json.load(f)
+
+    def _initialize_fasttext(self, emb_dim):
+        """Initializes the FastText model, downloading and resizing if necessary."""
+        fasttext_model_path = "./lms/cc.en.300.bin"
+
+        # Download and move FastText model if not already present
+        if not os.path.exists(fasttext_model_path):
+            fasttext.util.download_model('en')
+            shutil.move("./cc.en.300.bin", fasttext_model_path)
+
+        self.model = fasttext.load_model(fasttext_model_path)
+
+        # Reduce FastText model dimension if specified
+        if emb_dim < 300:
+            print("Reducing FastText model dimension...")
+            fasttext.util.reduce_model(self.model, emb_dim)
+
+    def _initialize_bert(self, encoder_type):
+        """Initializes the SentenceTransformer model based on BERT/MedBERT model type."""
+        model_name = 'all-MiniLM-L6-v2' if encoder_type == "bert" else 'pritamdeka/S-PubMedBert-MS-MARCO'
+        self.model = SentenceTransformer(model_name)
 
     def encode(self, sentences):
+        """
+        Encodes a list of sentences and caches them in memory.
+
+        Parameters:
+        - sentences (list of str): Sentences to encode.
+
+        Returns:
+        list of np.array: Encoded sentence vectors.
+        """
         encoded = []
-        for s in sentences:
-            if s not in self.memory.keys():
-                x = self.model.get_sentence_vector(s) if self.encoder_type == "fasttext" else self.model.encode([s])
-                x = x.reshape(1, -1)
-                if len(self.memory)+1 > self.memory_size:
-                    self.memory.popitem()
-                self.memory[s] = x.tolist()
-                if len(self.memory) % (round(self.memory_size*self.save_memory)) == 0:
-                    json.dump(self.memory, open(self.memory_path, 'w'))
-            encoded.append(np.array(self.memory[s]))
+        for sentence in sentences:
+            # Encode and cache if sentence not already in memory
+            if sentence not in self.memory:
+                vector = self._encode_sentence(sentence)
+                if len(self.memory) + 1 > self.memory_size:
+                    self.memory.popitem()  # Remove oldest item if memory is full
+                self.memory[sentence] = vector.tolist()
+
+                # Save memory periodically
+                if len(self.memory) % round(self.memory_size * self.save_memory) == 0:
+                    self._save_memory()
+
+            encoded.append(np.array(self.memory[sentence]))
         return encoded
+
+    def _encode_sentence(self, sentence):
+        """Encodes a single sentence based on the encoder type."""
+        if self.encoder_type == "fasttext":
+            return self.model.get_sentence_vector(sentence).reshape(1, -1)
+        return self.model.encode([sentence]).reshape(1, -1)
+
+    def _save_memory(self):
+        """Saves the current memory cache to a JSON file."""
+        with open(self.memory_path, 'w') as f:
+            json.dump(self.memory, f)
 
 
 def main():
-    e = Encoder(encoder_type="medbert", emb_dim=300, memory_size=10, save_memory=0.1, memory_path='../encoder_memory/medbert.json')
-    embs = e.encode([
+    """
+    Main function to demonstrate the Encoder class with sample sentences.
+    """
+    # Initialize encoder with specified parameters
+    encoder = Encoder(
+        encoder_type="medbert",
+        emb_dim=300,
+        memory_size=10,
+        save_memory=0.1,
+        memory_path='../encoder_memory/medbert.json'
+    )
+
+    # List of sample sentences to encode
+    sample_sentences = [
         "The mysterious old book sat on the dusty shelf, its pages filled with forgotten tales.",
         "With a sudden gust of wind, the leaves danced in a chaotic frenzy, painting the autumn sky with shades of gold and crimson.",
         "As the first rays of sunlight peeked over the horizon, the sleepy town slowly awakened to a new day.",
-        "In the heart of the bustling city, a street performer captivated the crowd with mesmerizing melodies on a weathered violin.",
-        "The aroma of freshly baked bread wafted through the air, enticing passersby to step into the quaint bakery on the corner.",
-        "Beneath the twinkling stars, a lone wolf howled, its mournful cry echoing through the silent night.",
-        "Lost in thought, she absentmindedly traced the rim of her coffee cup with her fingertips, the steam curling upwards in delicate wisps.",
-        "The antique clock on the mantelpiece ticked away the hours, a faithful guardian of time in the quiet room.",
-        "Amidst the vibrant market stalls, a street vendor skillfully juggled colorful fruits, drawing smiles from amused onlookers.",
-        "A rusted key, hidden for decades, was discovered in the dusty attic, unlocking memories of a bygone era.",
-        "The old lighthouse stood tall against the stormy sea, its beacon guiding ships safely through the turbulent waters.",
-        "With a mischievous grin, the child presented a hand-picked bouquet of wildflowers, a simple gesture that warmed the heart.",
-        "The scent of rain lingered in the air as thunder rumbled in the distance, signaling an approaching summer storm.",
-        "A tattered map led the adventurous explorer through dense jungles, across roaring rivers, and finally to a hidden treasure trove.",
-        "As the full moon bathed the landscape in silver light, the nocturnal creatures emerged from their hiding places, beginning their nightly rituals.",
-        "The old oak tree, with branches reaching towards the sky, whispered tales of centuries gone by to anyone who cared to listen.",
-        "In the quiet library, the turning of pages and the occasional cough created a symphony of knowledge and contemplation.",
-        "Wandering through a field of sunflowers, she felt the warmth of the sun on her face and the gentle embrace of a soft breeze.",
-        "A single candle flickered in the darkness, casting eerie shadows on the walls and revealing glimpses of a forgotten room.",
-        "The laughter of children echoed through the playground, a joyful melody that echoed the innocence of youth."
-    ])
-    print(embs)
-    print(embs[0].shape)
+    ]
 
+    # Encode sentences and print the resulting embeddings
+    embeddings = encoder.encode(sample_sentences)
+    print(embeddings)
+    print(f"Shape of first embedding: {embeddings[0].shape}")
 
 if __name__ == '__main__':
     main()
+

@@ -14,6 +14,16 @@ print(device)
 
 
 def join_statistics(stats, unq=False):
+    """
+    Concatenates interaction statistics with other provided stats.
+
+    Parameters:
+    - stats (dict): Dictionary containing 'interactions', 'unq_interactions', and additional stats.
+    - unq (bool): If True, uses 'unq_interactions' instead of 'interactions'.
+
+    Returns:
+    np.array: Concatenated statistics as a single array.
+    """
     output = stats["unq_interactions" if unq else "interactions"]
     for c in stats.keys():
         if c not in ["unq_interactions", "interactions"]:
@@ -21,8 +31,16 @@ def join_statistics(stats, unq=False):
     return output
 
 
+
 class DRRNAgent:
     def __init__(self, args, state_dim):
+        """
+        Initializes DRRNAgent with encoders, neural networks, memory, and settings.
+
+        Parameters:
+        - args (dict): Dictionary of parameters for agent setup.
+        - state_dim (int): Dimensionality of the state vector.
+        """
         self.train_type = args["train_type"]
         self.llm_assisted = args["llm_assisted"]
         self.pretrained_explore = args["pretrained_explore"]
@@ -101,15 +119,19 @@ class DRRNAgent:
             self.load_recent()
 
     def watch(self):
+        #Enables Wandb monitoring for logging model metrics.
         wandb.watch(self.policy_network, self.criterion, log="all", log_freq=1)
 
     def observe(self, inp, ):
+        # Adds new transitions to replay memory.
         self.memory.push(*inp)
 
     def reset_dictionaries(self):
+        # Resets action-to-encoding dictionaries (a2e).
         self.a2e = dict()
 
     def encode_actions(self, actions):
+        # Encodes actions based on their type and stores them in self.a2e for reuse.
         kind = actions[0]["type"]
         if kind not in self.a2e.keys():
             l = []
@@ -126,12 +148,23 @@ class DRRNAgent:
         return self.a2e[kind]
 
     def encode_state(self, state):
+        # Encodes the state sentence using state_encoder.
         s = state[1]
         e = self.state_encoder.encode([s])[0]
         return e.reshape(-1)
 
     def create_state(self, update_sentence, hc, previous_state=None):
-        state = None
+        """
+        Creates and returns a complete state vector from various components.
+
+        Parameters:
+        - update_sentence (str): The sentence describing the current update.
+        - hc (dict): Dictionary containing hard-coded features.
+        - previous_state (np.array, optional): Previous state vector.
+
+        Returns:
+        np.array: The fully constructed state vector.
+        """
         if self.emb is None:
             if self.hc is None:
                 raise "At least one of the features should be added to the state!"
@@ -182,7 +215,21 @@ class DRRNAgent:
         return state.reshape(1, -1)
 
     def act(self, states, poss_acts, policy="softmax", epsilon=1, eval_mode=False, action_strs=None, temperature=0.001):
-        """Returns a string action from poss_acts."""
+        """
+        Selects an action based on the policy network or pretrained network.
+
+        Parameters:
+        - states: Current state(s) of the agent.
+        - poss_acts: Possible actions to consider.
+        - policy (str): Policy type for action selection (default is "softmax").
+        - epsilon (float): Epsilon value for exploration.
+        - eval_mode (bool): If True, uses evaluation mode.
+        - action_strs (list, optional): Action descriptions.
+        - temperature (float): Temperature for softmax policy.
+
+        Returns:
+        tuple: Selected action IDs, indices, values, and next state.
+        """
         if self.llm_assisted and not eval_mode:
             # random number between 0 and 1
             if np.random.rand() > self.pretrained_explore:
@@ -200,15 +247,22 @@ class DRRNAgent:
         act_probs = act_probs.detach().cpu().numpy()
         act_probs = act_probs[sorted_idxs]
         if eval_mode:
-            # print("....................................")
+            print("....................................")
             s = action_strs[sorted_idxs[-1]]["sentence"]
-            # print(f"1st={s},{np.sort(sorted_values)[-1]:.3f}({act_probs[-1]:.3f}%)")
+            print(f"1st={s},{np.sort(sorted_values)[-1]:.3f}({act_probs[-1]:.3f}%)")
             if len(sorted_values) > 1:
                 s = action_strs[sorted_idxs[-2]]["sentence"]
-                # print(f"2nd={s},{np.sort(sorted_values)[-2]:.3f}({act_probs[-2]:.3f}%)")
+                print(f"2nd={s},{np.sort(sorted_values)[-2]:.3f}({act_probs[-2]:.3f}%)")
         return act_ids, idxs, values, next_state
 
     def update(self):
+        """
+        Updates the policy network using transitions sampled from memory.
+
+        Returns:
+        float: The loss value after updating.
+        """
+
         if self.train_type == "normal":
             if len(self.memory) < self.batch_size:
                 return
@@ -233,7 +287,6 @@ class DRRNAgent:
         next_qvals = next_qvals * (
                 1 - torch.tensor(batch.done, dtype=torch.float, device=device)
         )
-        # print(sum(batch.done))
         targets = (
                 torch.tensor(batch.reward, dtype=torch.float, device=device)
                 + self.gamma * next_qvals
@@ -243,9 +296,6 @@ class DRRNAgent:
         nested_acts = tuple([[a] for a in batch.act])
         qvals, next_state = self.policy_network(
             state if self.train_type == "episode_unbatched" else batch.state, nested_acts)
-        # print(qvals)
-        # print(next_qvals)
-        # Combine the qvals: Maybe just do a greedy max for generality
         qvals = torch.cat(qvals)
         # Compute Huber loss
         loss = self.criterion(qvals, targets.detach())
@@ -264,6 +314,7 @@ class DRRNAgent:
         return loss.item()
 
     def load_recent(self):
+        # load the most recent model, including policy_network, target_network, and memory.
         try:
             self.memory = pickle.load(
                 open(pjoin(self.save_path, "memory.pkl"), "rb"))
@@ -273,9 +324,11 @@ class DRRNAgent:
                 pjoin(self.save_path, "target_model.pt"))
         except Exception as e:
             print("Error loading model.")
+            raise e
         return
 
     def save_recent(self):
+        # save the most recent model, including policy_network, target_network, and memory.
         torch.save(self.policy_network, pjoin(
             self.save_path, "policy_model.pt"))
         torch.save(self.target_network, pjoin(
@@ -285,11 +338,13 @@ class DRRNAgent:
         return
 
     def load_best(self):
+        # load the best model, including policy_network, target_network, and memory.
         self.save_recent()
         self.policy_network = torch.load(
             pjoin(self.save_path, "best_model.pt"))
 
     def save_best(self):
+        # save the best model, including policy_network, target_network, and memory.
         print("saving the model...")
         torch.save(self.policy_network, pjoin(
             self.save_path, f"best_model.pt"))
