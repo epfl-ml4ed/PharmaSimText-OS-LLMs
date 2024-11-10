@@ -12,10 +12,6 @@ This is a repository including the benchmark and agents included in an under rev
 ### Installation Steps
 
 1. **Clone the Repository**
-   ```bash
-   git clone <repository_url>
-   cd <repository_name>
-   ```
 
 2. **Create a Virtual Environment**
    ```bash
